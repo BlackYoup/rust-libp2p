@@ -1454,8 +1454,8 @@ where
             }
 
             KademliaHandlerEvent::QueryError { user_data, error } => {
-                log::debug!("Request to {:?} in query {:?} failed with {:?}",
-                            source, user_data, error);
+                log::debug!("Request to {:?} in query {:?} failed with {:?}. Query={:?}",
+                            source, user_data, error, self.queries.get(&user_data).as_ref().map(|q| q.inner.info.clone()));
                 // If the query to which the error relates is still active,
                 // signal the failure w.r.t. `source`.
                 if let Some(query) = self.queries.get_mut(&user_data) {

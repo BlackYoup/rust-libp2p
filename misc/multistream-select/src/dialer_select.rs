@@ -49,7 +49,8 @@ use std::{convert::TryFrom as _, io, iter, mem, pin::Pin, task::{Context, Poll}}
 pub fn dialer_select_proto<R, I>(
     inner: R,
     protocols: I,
-    version: Version
+    version: Version,
+    id: uuid::Uuid,
 ) -> DialerSelectFuture<R, I::IntoIter>
 where
     R: AsyncRead + AsyncWrite,
@@ -59,8 +60,10 @@ where
     let iter = protocols.into_iter();
     // We choose between the "serial" and "parallel" strategies based on the number of protocols.
     if iter.size_hint().1.map(|n| n <= 3).unwrap_or(false) {
-        Either::Left(dialer_select_proto_serial(inner, iter, version))
+        log::debug!("{} Protos serial", id);
+        Either::Left(dialer_select_proto_serial(inner, iter, version, id))
     } else {
+        log::debug!("{} Protos parallel", id);
         Either::Right(dialer_select_proto_parallel(inner, iter, version))
     }
 }
@@ -80,7 +83,8 @@ pub type DialerSelectFuture<R, I> = Either<DialerSelectSeq<R, I>, DialerSelectPa
 pub fn dialer_select_proto_serial<R, I>(
     inner: R,
     protocols: I,
-    version: Version
+    version: Version,
+    id: uuid::Uuid,
 ) -> DialerSelectSeq<R, I::IntoIter>
 where
     R: AsyncRead + AsyncWrite,
@@ -93,7 +97,8 @@ where
         protocols,
         state: SeqState::SendHeader {
             io: MessageIO::new(inner),
-        }
+        },
+        id
     }
 }
 
@@ -139,6 +144,7 @@ where
     protocols: iter::Peekable<I>,
     state: SeqState<R, I::Item>,
     version: Version,
+    id: uuid::Uuid,
 }
 
 enum SeqState<R, N>
@@ -198,7 +204,7 @@ where
                     if let Err(err) = Pin::new(&mut io).start_send(Message::Protocol(p.clone())) {
                         return Poll::Ready(Err(From::from(err)));
                     }
-                    log::debug!("Dialer: Proposed protocol: {}", p);
+                    log::debug!("{} Dialer: Proposed protocol: {}, peek={:?}, version={:?}", this.id, p, this.protocols.peek().is_some(), this.version);
 
                     if this.protocols.peek().is_some() {
                         *this.state = SeqState::FlushProtocol { io, protocol }
@@ -206,7 +212,7 @@ where
                         match this.version {
                             Version::V1 => *this.state = SeqState::FlushProtocol { io, protocol },
                             Version::V1Lazy => {
-                                log::debug!("Dialer: Expecting proposed protocol: {}", p);
+                                log::debug!("{} Dialer: Expecting proposed protocol: {}", this.id, p);
                                 let io = Negotiated::expecting(io.into_reader(), p, *this.version);
                                 return Poll::Ready(Ok((protocol, io)))
                             }
@@ -215,9 +221,11 @@ where
                 }
 
                 SeqState::FlushProtocol { mut io, protocol } => {
+                    log::debug!("{} Flush Protocol", this.id);
                     match Pin::new(&mut io).poll_flush(cx)? {
                         Poll::Ready(()) => *this.state = SeqState::AwaitProtocol { io, protocol },
                         Poll::Pending => {
+                            log::debug!("{} Flush protocol pending", this.id);
                             *this.state = SeqState::FlushProtocol { io, protocol };
                             return Poll::Pending
                         },
@@ -225,9 +233,11 @@ where
                 }
 
                 SeqState::AwaitProtocol { mut io, protocol } => {
+                    log::debug!("{} Await protocol", this.id);
                     let msg = match Pin::new(&mut io).poll_next(cx)? {
                         Poll::Ready(Some(msg)) => msg,
                         Poll::Pending => {
+                            log::debug!("{} Await protocol Pending", this.id);
                             *this.state = SeqState::AwaitProtocol { io, protocol };
                             return Poll::Pending
                         }
@@ -236,19 +246,21 @@ where
                                 io::Error::from(io::ErrorKind::UnexpectedEof)))),
                     };
 
+                    log::debug!("{} Await protocol ready {:?}", this.id, msg);
+
                     match msg {
                         Message::Header(v) if v == *this.version => {
                             *this.state = SeqState::AwaitProtocol { io, protocol };
                         }
                         Message::Protocol(ref p) if p.as_ref() == protocol.as_ref() => {
-                            log::debug!("Dialer: Received confirmation for protocol: {}", p);
+                            log::debug!("{} Dialer: Received confirmation for protocol: {}", this.id, p);
                             let (io, remaining) = io.into_inner();
                             let io = Negotiated::completed(io, remaining);
                             return Poll::Ready(Ok((protocol, io)));
                         }
                         Message::NotAvailable => {
-                            log::debug!("Dialer: Received rejection of protocol: {}",
-                                String::from_utf8_lossy(protocol.as_ref()));
+                            log::debug!("{} Dialer: Received rejection of protocol: {}",
+                                this.id, String::from_utf8_lossy(protocol.as_ref()));
                             let protocol = this.protocols.next().ok_or(NegotiationError::Failed)?;
                             *this.state = SeqState::SendProtocol { io, protocol }
                         }

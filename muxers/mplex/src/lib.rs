@@ -307,6 +307,7 @@ where C: AsyncRead + AsyncWrite + Unpin,
         }
 
         if let Some(out) = filter(&elem) {
+            trace!("Filter pass for {:?}", elem);
             return Poll::Ready(Ok(out));
         } else {
             let endpoint = elem.endpoint().unwrap_or(Endpoint::Dialer);
@@ -314,6 +315,11 @@ where C: AsyncRead + AsyncWrite + Unpin,
                 inner.buffer.push(elem);
             } else if !elem.is_close_or_reset_msg() {
                 debug!("Ignored message {:?} because the substream wasn't open", elem);
+            } else {
+                match elem {
+                    codec::Elem::Close { .. } => {},
+                    _ => unreachable!("what about the message?")
+                }
             }
         }
     }
@@ -477,6 +483,7 @@ where C: AsyncRead + AsyncWrite + Unpin
             if !substream.current_data.is_empty() {
                 let len = cmp::min(substream.current_data.len(), buf.len());
                 buf[..len].copy_from_slice(&substream.current_data.split_to(len));
+                trace!("Poll::Ready for substream {}", substream.num);
                 return Poll::Ready(Ok(len));
             }
 
@@ -488,6 +495,15 @@ where C: AsyncRead + AsyncWrite + Unpin
             // Try to find a packet of data in the buffer.
             let mut inner = self.inner.lock();
             let next_data_poll = next_match(&mut inner, cx, |elem| {
+                trace!("Filtering. elem={:?}, substream_num={}, endpoint={:?}", elem, substream.num, substream.endpoint);
+                match elem {
+                    codec::Elem::Data { substream_id, .. } => {
+                        if *substream_id != substream.num {
+                            //panic!("Differ");
+                        }
+                    },
+                    _ => {}
+                };
                 match elem {
                     codec::Elem::Data { substream_id, endpoint, data, .. }
                         if *substream_id == substream.num && *endpoint != substream.endpoint => // see note [StreamId]

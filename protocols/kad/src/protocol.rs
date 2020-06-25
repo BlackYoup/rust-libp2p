@@ -192,6 +192,7 @@ where
     fn upgrade_inbound(self, incoming: C, _: Self::Info) -> Self::Future {
         let mut codec = UviBytes::default();
         codec.set_max_len(self.max_packet_size);
+        log::trace!("upgrade_inbound");
 
         future::ok(
             Framed::new(incoming, codec)
@@ -203,7 +204,9 @@ where
                     future::ready(Ok(io::Cursor::new(buf)))
                 })
                 .and_then::<_, fn(_) -> _>(|bytes| {
-                    let request = match proto::Message::decode(bytes) {
+                    let decoded = proto::Message::decode(bytes);
+                    log::trace!("Received bytes. decoded={:?}", decoded);
+                    let request = match decoded {
                         Ok(r) => r,
                         Err(err) => return future::ready(Err(err.into()))
                     };
@@ -424,6 +427,7 @@ fn resp_msg_to_proto(kad_msg: KadResponseMsg) -> proto::Message {
 ///
 /// Fails if the protobuf message is not a valid and supported Kademlia request message.
 fn proto_to_req_msg(message: proto::Message) -> Result<KadRequestMsg, io::Error> {
+    log::trace!("proto_to_req_msg: {:?}", message);
     let msg_type = proto::message::MessageType::from_i32(message.r#type)
         .ok_or_else(|| invalid_data(format!("unknown message type: {}", message.r#type)))?;
 

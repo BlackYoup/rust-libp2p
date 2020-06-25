@@ -63,6 +63,10 @@ pub trait ConnectionHandler {
     /// Returning an error will close the connection to the remote.
     fn poll(&mut self, cx: &mut Context)
         -> Poll<Result<ConnectionHandlerEvent<Self::OutboundOpenInfo, Self::OutEvent>, Self::Error>>;
+
+    fn get_negotiating_out_ids(&self) -> Option<Vec<uuid::Uuid>> {
+        None
+    }
 }
 
 /// Prototype for a `ConnectionHandler`.

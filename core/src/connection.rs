@@ -259,6 +259,8 @@ where
             }
 
             // Poll the handler for new events.
+            let ids = self.handler.get_negotiating_out_ids();
+            log::trace!("Polling ConnectionHandler. io_pending={}, handler_negotiating_out={:?}", io_pending, ids);
             match self.handler.poll(cx) {
                 Poll::Pending => {
                     if io_pending {

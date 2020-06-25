@@ -61,9 +61,11 @@ where
     U: OutboundUpgrade<Negotiated<C>>
 {
     let iter = up.protocol_info().into_iter().map(NameWrap as fn(_) -> NameWrap<_>);
-    let future = multistream_select::dialer_select_proto(conn, iter, v);
+    let id = uuid::Uuid::new_v4();
+    let future = multistream_select::dialer_select_proto(conn, iter, v, id);
     OutboundUpgradeApply {
-        inner: OutboundUpgradeApplyState::Init { future, upgrade: up }
+        inner: OutboundUpgradeApplyState::Init { future, upgrade: up },
+        id,
     }
 }
 
@@ -149,7 +151,8 @@ where
     C: AsyncRead + AsyncWrite + Unpin,
     U: OutboundUpgrade<Negotiated<C>>
 {
-    inner: OutboundUpgradeApplyState<C, U>
+    inner: OutboundUpgradeApplyState<C, U>,
+    pub id: uuid::Uuid,
 }
 
 enum OutboundUpgradeApplyState<C, U>
@@ -189,9 +192,11 @@ where
                         Poll::Ready(x) => x,
                         Poll::Pending => {
                             self.inner = OutboundUpgradeApplyState::Init { future, upgrade };
+                            log::debug!("{} init still pending", self.id);
                             return Poll::Pending
                         }
                     };
+                    log::debug!("{} Init ready", self.id);
                     self.inner = OutboundUpgradeApplyState::Upgrade {
                         future: Box::pin(upgrade.upgrade_outbound(connection, info.0))
                     };
@@ -200,14 +205,15 @@ where
                     match Future::poll(Pin::new(&mut future), cx) {
                         Poll::Pending => {
                             self.inner = OutboundUpgradeApplyState::Upgrade { future };
+                            log::debug!("{} upgrade still pending", self.id);
                             return Poll::Pending
                         }
                         Poll::Ready(Ok(x)) => {
-                            debug!("Successfully applied negotiated protocol");
+                            debug!("{} Successfully applied negotiated protocol", self.id);
                             return Poll::Ready(Ok(x))
                         }
                         Poll::Ready(Err(e)) => {
-                            debug!("Failed to apply negotiated protocol");
+                            log::error!("{} Failed to apply negotiated protocol", self.id);
                             return Poll::Ready(Err(UpgradeError::Apply(e)));
                         }
                     }

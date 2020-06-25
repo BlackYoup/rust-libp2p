@@ -98,7 +98,7 @@ where
         Vec<(InboundUpgradeApply<Substream<StreamMuxerBox>, SendWrapper<TProtoHandler::InboundProtocol>>, Delay)>,
     /// Futures that upgrade outgoing substreams. The first element of the tuple is the userdata
     /// to pass back once successfully opened.
-    negotiating_out: Vec<(
+    pub negotiating_out: Vec<(
         TProtoHandler::OutboundOpenInfo,
         OutboundUpgradeApply<Substream<StreamMuxerBox>, SendWrapper<TProtoHandler::OutboundProtocol>>,
         Delay,
@@ -225,29 +225,44 @@ where
     > {
         // Continue negotiation of newly-opened substreams on the listening side.
         // We remove each element from `negotiating_in` one by one and add them back if not ready.
+        log::trace!("We have {} negotiating_in", self.negotiating_in.len());
         for n in (0..self.negotiating_in.len()).rev() {
+            log::trace!("Poll timeout for {}", n);
             let (mut in_progress, mut timeout) = self.negotiating_in.swap_remove(n);
             match Future::poll(Pin::new(&mut timeout), cx) {
                 Poll::Ready(_) => continue,
                 Poll::Pending => {},
             }
+            log::trace!("Poll stream for {}", n);
             match Future::poll(Pin::new(&mut in_progress), cx) {
-                Poll::Ready(Ok(upgrade)) =>
-                    self.handler.inject_fully_negotiated_inbound(upgrade),
-                Poll::Pending => self.negotiating_in.push((in_progress, timeout)),
+                Poll::Ready(Ok(upgrade)) => {
+                    log::trace!("Got Poll::Ready(Ok(upgrade))");
+                    self.handler.inject_fully_negotiated_inbound(upgrade);
+                }
+                Poll::Pending => {
+                    log::trace!("Got Poll::Pending");
+                    self.negotiating_in.push((in_progress, timeout));
+                },
                 // TODO: return a diagnostic event?
-                Poll::Ready(Err(_err)) => {}
+                Poll::Ready(Err(_err)) => {
+                    log::error!("Got Poll::Ready(Err(_err))");
+                }
             }
         }
 
         // Continue negotiation of newly-opened substreams.
         // We remove each element from `negotiating_out` one by one and add them back if not ready.
+        let ids: Vec<uuid::Uuid> = self.negotiating_out.iter().map(|(_, out, _)| out.id.clone()).collect();
+        log::trace!("We have {} negotiating_out. outs={:?}", self.negotiating_out.len(), ids);
         for n in (0..self.negotiating_out.len()).rev() {
             let (upgr_info, mut in_progress, mut timeout) = self.negotiating_out.swap_remove(n);
+            log::trace!("Poll timeout for n={}, id={:?}", n, in_progress.id);
             match Future::poll(Pin::new(&mut timeout), cx) {
                 Poll::Ready(Ok(_)) => {
                     let err = ProtocolsHandlerUpgrErr::Timeout;
                     self.handler.inject_dial_upgrade_error(upgr_info, err);
+                    log::error!("ProcolsHandlerUpgrErr::Timeout. Handler id: {}", in_progress.id);
+                    panic!();
                     continue;
                 },
                 Poll::Ready(Err(_)) => {
@@ -257,14 +272,19 @@ where
                 },
                 Poll::Pending => {},
             }
+            log::trace!("Poll future for n={}, id={:?}", n, in_progress.id);
             match Future::poll(Pin::new(&mut in_progress), cx) {
                 Poll::Ready(Ok(upgrade)) => {
+                    log::trace!("Got Ready for n={}, id={:?}", n, in_progress.id);
                     self.handler.inject_fully_negotiated_outbound(upgrade, upgr_info);
                 }
                 Poll::Pending => {
+                    log::trace!("Got pending for n={}, id={:?}", n, in_progress.id);
                     self.negotiating_out.push((upgr_info, in_progress, timeout));
                 }
                 Poll::Ready(Err(err)) => {
+                    log::error!("Got err for n={}, id={:?}", n, in_progress.id);
+                    panic!();
                     let err = ProtocolsHandlerUpgrErr::Upgrade(err);
                     self.handler.inject_dial_upgrade_error(upgr_info, err);
                 }
@@ -323,5 +343,9 @@ where
         }
 
         Poll::Pending
+    }
+
+    fn get_negotiating_out_ids(&self) -> Option<Vec<uuid::Uuid>> {
+        Some(self.negotiating_out.iter().map(|(_, stream, _)| stream.id.clone()).collect())
     }
 }
